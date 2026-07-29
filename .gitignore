@@ -36,3 +36,17 @@ compile_commands.json
 *.bndb
 xbox/
 !source/**/xbox/
+
+# --- RE workbench (freeqaz fork additions) ---
+# Ghidra projects: large, machine-local, rebuildable via tools/ghidra/ghidractl
+/ghidra_projects/
+# Databases: caches and ledgers. config/halo/functions.sqlite is deliberately
+# NOT ignored — the RE ledger is tracked so naming/status work is shared.
+/cache.db
+/decomp.db
+/*.db-shm
+/*.db-wal
+# pyghidra-mcp server registry, rewritten per-machine by `ghidractl mcp`
+/.mcp.json
+# decomp-synth working dirs
+/.decomp-synth/

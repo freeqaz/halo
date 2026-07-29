@@ -1,0 +1,71 @@
+{
+  "_comment": "Declarative registry for ghidractl. A 'workspace' = one Ghidra project = one generic pyghidra-mcp server = one port = one .mcp.json entry. Multiple binaries can live in one workspace (routed by binary_name). ghidractl itself is generic and vendor-agnostic \u2014 it only reads this file. Ported from godzilla-decomp 2026-07-29. Ports 8021-8023 belong to godzilla-decomp; halo uses 8031+.",
+  "config": {
+    "repo_root": "/home/free/code/milohax/decomp-clones/halo",
+    "ghidra_install_dir": "/opt/ghidra",
+    "java_home": "/usr/lib/jvm/java-21-openjdk",
+    "pyghidra_mcp_project": "/home/free/code/milohax/pyghidra-mcp",
+    "uv_python": "3.10",
+    "host": "127.0.0.1",
+    "runtime_dir": "/tmp/claude/ghidractl-halo",
+    "log_dir": "/tmp/claude",
+    "ghidra_user_home_base": "/tmp/claude",
+    "mcp_json": "/home/free/code/milohax/decomp-clones/halo/.mcp.json",
+    "mcp_name_prefix": "ghidra-"
+  },
+  "default_workspaces": [
+    "halo"
+  ],
+  "workspaces": {
+    "halo": {
+      "port": 8031,
+      "project": "ghidra_projects/halo/halo",
+      "desc": "Halo CE build 2342 match target: cachebeta.exe (Win32 i386 PE, MSVC vc7 13.00.9254, ImageBase 0x400000, 6.5MB) plus the three companion XBEs",
+      "skill": "halo-cachebeta",
+      "flags": [],
+      "binaries": [
+        {
+          "label": "cachebeta",
+          "binary_name": "/cachebeta.exe-d7dc40",
+          "arch": "i386 Win32 PE \u2014 ImageBase 0x00400000, linker 7.00, built 2002-01-14",
+          "path": "cachebeta.exe",
+          "_note": "THE match target. csplit slices this into build/split/**.obj, which objdiff scores candidates against. sha256 4cc87b45f721270392a96f1674ed2b5cd4a7bb4355faeab4531d1cf1884d9520. A stripped cachebeta.pdb ships beside it in ../halo-protos/ce_2002-01-14/ \u2014 type NAMES only, all struct bodies empty, so it is near-useless for member layout; use the CEA workspace for that."
+        },
+        {
+          "label": "cachebeta_xbe",
+          "binary_name": "/cachebeta.xbe",
+          "arch": "Xbox XBE (i386)",
+          "path": "../halo-protos/ce_2002-01-14/cachebeta.xbe",
+          "_note": "Xbox-side executable from the same Jan 14 2002 package. Ghidra 12.1.2 has NO XBE loader, so this does NOT import \u2014 verified 2026-07-29, the project contains only cachebeta.exe. Left registered as documentation of intent; to actually load it, install an XBE loader extension or import the raw image manually at the XBE base address.",
+          "_status": "not-importable-without-xbe-loader"
+        }
+      ]
+    },
+    "cea": {
+      "port": 8032,
+      "project": "ghidra_projects/cea/cea",
+      "desc": "Halo: Combat Evolved Anniversary (Jun 24 2011, cl 0.0.83147) reference build \u2014 Xbox 360 XEX2 with FULL private PDBs. The symbol source the decomp's README points at.",
+      "skill": "halo-cea",
+      "flags": [
+        "--decompiler-timeout",
+        "60"
+      ],
+      "binaries": [
+        {
+          "label": "hcex",
+          "binary_name": "/HCEX.xex",
+          "arch": "Xbox 360 XEX2 (PowerPC BE), preferred load address 0x82000000",
+          "path": "../halo-protos/cea_2011-06-24/HCEX.xex",
+          "_note": "Debug config. Pair with HCEX.pdb \u2014 pdb-decompiler recovers 10,146 source files whose tree mirrors ALL 38 of this decomp's source/ directories. Extracted output: ../halo-symbols/cea_2011-06-24_HCEX/"
+        },
+        {
+          "label": "hcex_release",
+          "binary_name": "/HCEX_Release.xex",
+          "arch": "Xbox 360 XEX2 (PowerPC BE), preferred load address 0x82000000",
+          "path": "../halo-protos/cea_2011-06-24/HCEX_Release.xex"
+        }
+      ],
+      "_pdb_note": "IMPORTANT: PDB completeness varies BY BUILD, not by config. Jun 24 2011 carries module->source-file mappings (10,146 files recovered). Jul 28 2011 does NOT \u2014 same 124MB size, but pdb-decompiler emits only exported.h. Always probe a PDB before trusting it; see ../halo-symbols/README.md."
+    }
+  }
+}

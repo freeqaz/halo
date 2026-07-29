@@ -1,0 +1,544 @@
+#!/usr/bin/env python3
+"""ghidractl — manage the router-decomp pyghidra-mcp workbench.
+
+One *workspace* = one Ghidra project = one generic pyghidra-mcp server = one port
+= one .mcp.json entry. A workspace can host several binaries (tools route by
+`binary_name`; `list_project_binaries` is the menu). All target layout lives in
+`workspaces.json` next to this file; this script is generic and vendor-agnostic.
+
+Vendor-specific playbooks live in `.claude/skills/<vendor>/` so an agent loads
+focused context for ONE target instead of every target's tools at once.
+
+Common use:
+    ghidractl ls                  # registry + up/down + registered state
+    ghidractl up cisco            # launch a workspace server (auto-builds if new)
+    ghidractl up --default        # launch the curated default set + register them
+    ghidractl status              # what's listening / ready
+    ghidractl logs cisco -f       # tail a server's log
+    ghidractl down cisco          # stop a workspace server
+    ghidractl mcp --default       # rewrite .mcp.json to the curated default set
+    ghidractl attach fgt-init     # add one workspace to .mcp.json
+    ghidractl detach baseline     # remove one workspace from .mcp.json
+
+Readiness: servers launch with --wait-for-analysis, so "port is listening" == ready.
+A fresh consolidated workspace (baseline, fortios-av) analyzes on its first `up`
+and will not listen for a few minutes; reopening an analyzed project is fast
+(Ghidra skips re-analysis).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REGISTRY = HERE / "workspaces.json"
+
+# ---------------------------------------------------------------------------- #
+# registry
+# ---------------------------------------------------------------------------- #
+
+
+def load_registry() -> dict:
+    with REGISTRY.open() as f:
+        reg = json.load(f)
+    reg.setdefault("config", {})
+    reg.setdefault("workspaces", {})
+    reg.setdefault("default_workspaces", [])
+    return reg
+
+
+def cfg(reg: dict, key: str, default=None):
+    return reg["config"].get(key, default)
+
+
+def repo_root(reg: dict) -> Path:
+    return Path(cfg(reg, "repo_root", ".")).resolve()
+
+
+def resolve_ws(reg: dict, names: list[str], allow_all=True) -> list[str]:
+    """Expand a list of workspace selectors into concrete names."""
+    ws = reg["workspaces"]
+    out: list[str] = []
+    for n in names:
+        if n in ("--all", "all") and allow_all:
+            out = list(ws.keys())
+            break
+        if n in ("--default", "default"):
+            out.extend(reg["default_workspaces"])
+            continue
+        if n not in ws:
+            die(f"unknown workspace '{n}'. known: {', '.join(ws)}")
+        out.append(n)
+    # de-dup preserving order
+    seen, uniq = set(), []
+    for n in out:
+        if n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    return uniq
+
+
+# ---------------------------------------------------------------------------- #
+# small helpers
+# ---------------------------------------------------------------------------- #
+
+C = {
+    "g": "\033[32m", "r": "\033[31m", "y": "\033[33m", "b": "\033[34m",
+    "dim": "\033[2m", "bold": "\033[1m", "x": "\033[0m",
+}
+if not sys.stdout.isatty():
+    C = {k: "" for k in C}
+
+
+def die(msg: str, code: int = 1):
+    print(f"{C['r']}error:{C['x']} {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def info(msg: str):
+    print(f"{C['b']}::{C['x']} {msg}")
+
+
+def runtime_dir(reg: dict) -> Path:
+    d = Path(cfg(reg, "runtime_dir", "/tmp/claude/ghidractl"))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def pidfile(reg: dict, ws: str) -> Path:
+    return runtime_dir(reg) / f"{ws}.pid"
+
+
+def logfile(reg: dict, ws: str) -> Path:
+    return Path(cfg(reg, "log_dir", "/tmp/claude")) / f"pyghidra-mcp-{ws}.log"
+
+
+def stdout_log(reg: dict, ws: str) -> Path:
+    return Path(cfg(reg, "log_dir", "/tmp/claude")) / f"pyghidra-mcp-{ws}.stdout.log"
+
+
+def port_is_listening(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.4)
+        return s.connect_ex((host, port)) == 0
+
+
+def listener_pid(port: int) -> int | None:
+    """PID listening on a TCP port, via `ss` (own processes don't need root)."""
+    try:
+        out = subprocess.run(
+            ["ss", "-tlnpH", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:
+        return None
+    m = re.search(r"pid=(\d+)", out)
+    return int(m.group(1)) if m else None
+
+
+def _perm_check(pid: int) -> bool:
+    """True if a process with this pid currently exists."""
+    return Path(f"/proc/{pid}").exists()
+
+
+def read_pid(reg: dict, ws: str) -> int | None:
+    pf = pidfile(reg, ws)
+    if not pf.exists():
+        return None
+    try:
+        pid = int(pf.read_text().strip())
+    except Exception:
+        return None
+    return pid if _perm_check(pid) else None
+
+
+# ---------------------------------------------------------------------------- #
+# state model
+# ---------------------------------------------------------------------------- #
+
+
+def ws_state(reg: dict, ws: str) -> dict:
+    w = reg["workspaces"][ws]
+    host = cfg(reg, "host", "127.0.0.1")
+    port = w["port"]
+    listening = port_is_listening(host, port)
+    pid = read_pid(reg, ws) or listener_pid(port)
+    return {
+        "port": port,
+        "listening": listening,
+        "pid": pid,
+        "ready": listening,           # --wait-for-analysis => listening == ready
+        "project_built": _project_has_data(repo_root(reg) / w["project"]),
+        "registered": ws in registered_workspaces(reg),
+    }
+
+
+# ---------------------------------------------------------------------------- #
+# launch / stop
+# ---------------------------------------------------------------------------- #
+
+
+def build_argv(reg: dict, ws: str) -> tuple[list[str], dict, Path]:
+    w = reg["workspaces"][ws]
+    root = repo_root(reg)
+    host = cfg(reg, "host", "127.0.0.1")
+    project_abs = root / w["project"]
+    project_abs.parent.mkdir(parents=True, exist_ok=True)
+
+    bin_paths = []
+    for b in w["binaries"]:
+        p = (root / b["path"]).resolve()
+        if not p.exists():
+            die(f"[{ws}] binary missing: {p}")
+        bin_paths.append(str(p))
+
+    flags = w.get("flags", [])
+    if isinstance(flags, str):
+        flags = shlex.split(flags) if flags.strip() else []
+
+    argv = [
+        "uv", "run", "--python", str(cfg(reg, "uv_python", "3.10")),
+        "--project", cfg(reg, "pyghidra_mcp_project"),
+        "pyghidra-mcp",
+        "--transport", "streamable-http",
+        "--host", host,
+        "--port", str(w["port"]),
+        "--project-path", str(project_abs),
+        "--wait-for-analysis",
+        "--cache-dir", str(root),
+        "--log-file", str(logfile(reg, ws)),
+        *flags,
+        *bin_paths,
+    ]
+
+    user_home = Path(cfg(reg, "ghidra_user_home_base", "/tmp/claude")) / f"ghidra_user_{ws}"
+    user_home.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["GHIDRA_INSTALL_DIR"] = cfg(reg, "ghidra_install_dir", "/opt/ghidra")
+    env["JAVA_HOME"] = cfg(reg, "java_home", "/usr/lib/jvm/java-17-openjdk")
+    env["GHIDRA_USER_HOME"] = str(user_home)
+    return argv, env, project_abs
+
+
+def cmd_up(reg: dict, names: list[str], wait: int):
+    targets = resolve_ws(reg, names or ["--default"])
+    for ws in targets:
+        st = ws_state(reg, ws)
+        if st["listening"]:
+            info(f"{ws}: already up on :{st['port']} (pid {st['pid']})")
+            continue
+        argv, env, project_abs = build_argv(reg, ws)
+        fresh = not _project_has_data(project_abs)
+        lf, sf = logfile(reg, ws), stdout_log(reg, ws)
+        lf.parent.mkdir(parents=True, exist_ok=True)
+        with open(sf, "ab") as out:
+            proc = subprocess.Popen(
+                argv, cwd=str(repo_root(reg)), env=env,
+                stdout=out, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+        pidfile(reg, ws).write_text(str(proc.pid))
+        kind = (f"{C['y']}FIRST BUILD (import+analyze, minutes){C['x']}"
+                if fresh else "reopen (fast, no re-analysis)")
+        info(f"{ws}: launched pid {proc.pid} on :{reg['workspaces'][ws]['port']} — {kind}")
+        print(f"   log: {lf}")
+        if wait:
+            _wait_ready(reg, ws, wait)
+    print(f"\n{C['dim']}tip: `ghidractl status` to watch readiness; "
+          f"`ghidractl attach {' '.join(targets)}` to register in .mcp.json{C['x']}")
+
+
+def _project_has_data(project_abs: Path) -> bool:
+    """A populated Ghidra project keeps <stem>.gpr / <stem>.rep inside project_abs."""
+    stem = project_abs.name
+    return (project_abs / f"{stem}.gpr").exists() or (project_abs / f"{stem}.rep").exists()
+
+
+def _wait_ready(reg: dict, ws: str, timeout: int):
+    host = cfg(reg, "host", "127.0.0.1")
+    port = reg["workspaces"][ws]["port"]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if port_is_listening(host, port):
+            info(f"{ws}: ready on :{port}")
+            return
+        time.sleep(2)
+    print(f"{C['y']}   still analyzing after {timeout}s — check `ghidractl logs {ws} -f`{C['x']}")
+
+
+def cmd_down(reg: dict, names: list[str]):
+    for ws in resolve_ws(reg, names):
+        st = ws_state(reg, ws)
+        pid = read_pid(reg, ws)
+        killed = False
+        # Prefer killing the whole process group we started (uv -> python -> JVM).
+        for target_pid, how in [(pid, "pidfile"), (st["pid"], "port")]:
+            if not target_pid or not _perm_check(target_pid):
+                continue
+            try:
+                pgid = os.getpgid(target_pid)
+                os.killpg(pgid, signal.SIGTERM)
+                killed = True
+                info(f"{ws}: SIGTERM to process group {pgid} ({how} pid {target_pid})")
+                break
+            except ProcessLookupError:
+                continue
+            except Exception as e:
+                print(f"{C['y']}   {ws}: {e}{C['x']}")
+        if not killed:
+            info(f"{ws}: not running")
+        pidfile(reg, ws).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------- #
+# .mcp.json curation
+# ---------------------------------------------------------------------------- #
+
+
+def mcp_path(reg: dict) -> Path:
+    return Path(cfg(reg, "mcp_json", repo_root(reg) / ".mcp.json"))
+
+
+def mcp_name(reg: dict, ws: str) -> str:
+    return f"{cfg(reg, 'mcp_name_prefix', 'ghidra-')}{ws}"
+
+
+def load_mcp(reg: dict) -> dict:
+    p = mcp_path(reg)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {"mcpServers": {}}
+
+
+def registered_workspaces(reg: dict) -> set[str]:
+    servers = load_mcp(reg).get("mcpServers", {})
+    pref = cfg(reg, "mcp_name_prefix", "ghidra-")
+    return {name[len(pref):] for name in servers if name.startswith(pref)}
+
+
+def write_mcp(reg: dict, ws_names: list[str]):
+    host = cfg(reg, "host", "127.0.0.1")
+    doc = load_mcp(reg)
+    servers = doc.setdefault("mcpServers", {})
+    pref = cfg(reg, "mcp_name_prefix", "ghidra-")
+    # drop all ghidractl-managed entries (current `ghidra-*` and legacy `pyghidra-*`
+    # single-binary servers), preserving any unrelated MCP servers, then add the set.
+    managed = ("ghidra-", "pyghidra-")
+    for name in [n for n in servers if n.startswith(managed)]:
+        del servers[name]
+    for ws in ws_names:
+        port = reg["workspaces"][ws]["port"]
+        servers[mcp_name(reg, ws)] = {"type": "http", "url": f"http://{host}:{port}/mcp"}
+    mcp_path(reg).write_text(json.dumps(doc, indent=2) + "\n")
+    info(f".mcp.json now registers: {', '.join(mcp_name(reg, w) for w in ws_names) or '(none)'}")
+    print(f"{C['dim']}   restart Claude Code / reconnect MCP for changes to take effect{C['x']}")
+
+
+def cmd_mcp(reg: dict, names: list[str]):
+    write_mcp(reg, resolve_ws(reg, names or ["--default"]))
+
+
+def cmd_attach(reg: dict, names: list[str]):
+    cur = sorted(registered_workspaces(reg) & set(reg["workspaces"]))
+    add = resolve_ws(reg, names)
+    write_mcp(reg, sorted(set(cur) | set(add), key=list(reg["workspaces"]).index))
+
+
+def cmd_detach(reg: dict, names: list[str]):
+    cur = registered_workspaces(reg) & set(reg["workspaces"])
+    rm = set(resolve_ws(reg, names))
+    write_mcp(reg, sorted(cur - rm, key=list(reg["workspaces"]).index))
+
+
+# ---------------------------------------------------------------------------- #
+# reporting
+# ---------------------------------------------------------------------------- #
+
+
+def cmd_ls(reg: dict, _names):
+    print(f"{C['bold']}workspaces{C['x']}  "
+          f"{C['dim']}(default set: {', '.join(reg['default_workspaces'])}){C['x']}\n")
+    for ws, w in reg["workspaces"].items():
+        st = ws_state(reg, ws)
+        dot = (f"{C['g']}●{C['x']}" if st["listening"]
+               else f"{C['dim']}○{C['x']}")
+        reg_tag = f"{C['b']}[mcp]{C['x']}" if st["registered"] else "     "
+        built = "" if st["project_built"] else f" {C['y']}(not built){C['x']}"
+        skill = w.get("skill", "-")
+        print(f"  {dot} {reg_tag} {C['bold']}{ws:<11}{C['x']} :{w['port']}  "
+              f"skill=/{skill}{built}")
+        for b in w["binaries"]:
+            path = b.get("path", "")
+            label = b.get("label") or Path(path).name or "?"
+            arch = b.get("arch", "?")
+            binary_name = b.get("binary_name", label)
+            print(f"        {C['dim']}{binary_name:<28} {arch:<14} "
+                  f"{label}{C['x']}")
+    print(f"\n{C['dim']}● up  ○ down  [mcp]=registered in .mcp.json{C['x']}")
+
+
+def cmd_validate(reg: dict, names: list[str]):
+    targets = resolve_ws(reg, names) if names else list(reg["workspaces"])
+    root = repo_root(reg)
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for ws in targets:
+        w = reg["workspaces"].get(ws, {})
+        prefix = f"{ws}: "
+        if not isinstance(w.get("port"), int):
+            errors.append(prefix + "missing/invalid integer port")
+        if not w.get("project"):
+            errors.append(prefix + "missing project")
+        flags = w.get("flags", [])
+        if not isinstance(flags, list):
+            warnings.append(prefix + "flags should be a list; non-list values are tolerated at launch")
+        skill = w.get("skill")
+        if skill:
+            skill_path = root / ".claude" / "skills" / skill / "SKILL.md"
+            if not skill_path.exists():
+                warnings.append(prefix + f"skill path missing: {skill_path.relative_to(root)}")
+        else:
+            warnings.append(prefix + "missing skill")
+
+        binaries = w.get("binaries")
+        if not isinstance(binaries, list) or not binaries:
+            errors.append(prefix + "missing binaries list")
+            continue
+        for i, b in enumerate(binaries):
+            bp = f"{prefix}binary[{i}] "
+            for key in ("binary_name", "path"):
+                if not b.get(key):
+                    errors.append(bp + f"missing {key}")
+            for key in ("label", "arch"):
+                if not b.get(key):
+                    warnings.append(bp + f"missing {key}")
+            path = b.get("path")
+            if path:
+                p = Path(path)
+                if not p.is_absolute():
+                    p = root / p
+                if not p.exists():
+                    errors.append(bp + f"path does not exist: {p}")
+
+    for msg in warnings:
+        print(f"{C['y']}warn:{C['x']} {msg}")
+    for msg in errors:
+        print(f"{C['r']}error:{C['x']} {msg}", file=sys.stderr)
+    if errors:
+        sys.exit(1)
+    info(f"registry validation passed for {len(targets)} workspace(s)")
+
+
+def cmd_status(reg: dict, names: list[str]):
+    targets = resolve_ws(reg, names) if names else list(reg["workspaces"])
+    for ws in targets:
+        st = ws_state(reg, ws)
+        if st["listening"]:
+            s = f"{C['g']}UP{C['x']}   ready on :{st['port']}  pid {st['pid']}"
+        elif st["pid"] and _perm_check(st["pid"]):
+            s = f"{C['y']}BUSY{C['x']} pid {st['pid']} running, port :{st['port']} not yet listening (analyzing?)"
+        else:
+            s = f"{C['dim']}DOWN{C['x']} :{st['port']}"
+        reg_tag = " [mcp]" if st["registered"] else ""
+        print(f"  {ws:<11} {s}{reg_tag}")
+
+
+def cmd_logs(reg: dict, names: list[str], follow: bool):
+    if not names:
+        die("logs needs a workspace name")
+    ws = resolve_ws(reg, names[:1])[0]
+    lf = logfile(reg, ws)
+    if not lf.exists():
+        die(f"no log yet: {lf}")
+    os.execvp("tail", ["tail", "-n", "80"] + (["-f"] if follow else []) + [str(lf)])
+
+
+# ---------------------------------------------------------------------------- #
+# argparse
+# ---------------------------------------------------------------------------- #
+
+
+def main():
+    reg = load_registry()
+    p = argparse.ArgumentParser(prog="ghidractl", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def ws_arg(sp):
+        sp.add_argument("workspaces", nargs="*",
+                        help="workspace name(s); also accepts bare 'all' / 'default'")
+        sp.add_argument("--all", action="store_true", help="select every workspace")
+        sp.add_argument("--default", dest="use_default", action="store_true",
+                        help="select the curated default set")
+
+    sub.add_parser("ls", help="list workspaces with up/down + registration state")
+    ws_arg(sub.add_parser("validate", help="validate registry metadata and binary paths"))
+    ws_arg(sub.add_parser("status", help="show running/ready state"))
+
+    up = sub.add_parser("up", help="launch workspace server(s) [default: curated set]")
+    ws_arg(up)
+    up.add_argument("--wait", type=int, default=0, metavar="SEC",
+                    help="block up to SEC seconds waiting for readiness")
+
+    ws_arg(sub.add_parser("down", help="stop workspace server(s)"))
+    ws_arg(sub.add_parser("restart", help="down + up"))
+
+    lg = sub.add_parser("logs", help="tail a workspace server log")
+    lg.add_argument("workspaces", nargs="*")
+    lg.add_argument("-f", "--follow", action="store_true")
+
+    ws_arg(sub.add_parser("mcp", help="rewrite .mcp.json to exactly this set [default: curated]"))
+    ws_arg(sub.add_parser("attach", help="add workspace(s) to .mcp.json"))
+    ws_arg(sub.add_parser("detach", help="remove workspace(s) from .mcp.json"))
+
+    a = p.parse_args()
+
+    def selectors():
+        if getattr(a, "all", False):
+            return ["all"]
+        sel = list(getattr(a, "workspaces", []) or [])
+        if getattr(a, "use_default", False):
+            sel = ["default"] + sel
+        return sel
+
+    if a.cmd == "ls":
+        cmd_ls(reg, None)
+    elif a.cmd == "validate":
+        cmd_validate(reg, selectors())
+    elif a.cmd == "status":
+        cmd_status(reg, selectors())
+    elif a.cmd == "up":
+        cmd_up(reg, selectors(), a.wait)
+    elif a.cmd == "down":
+        cmd_down(reg, selectors())
+    elif a.cmd == "restart":
+        sel = selectors()
+        cmd_down(reg, sel)
+        time.sleep(1)
+        cmd_up(reg, sel, 0)
+    elif a.cmd == "logs":
+        cmd_logs(reg, a.workspaces, a.follow)
+    elif a.cmd == "mcp":
+        cmd_mcp(reg, selectors())
+    elif a.cmd == "attach":
+        cmd_attach(reg, selectors())
+    elif a.cmd == "detach":
+        cmd_detach(reg, selectors())
+
+
+if __name__ == "__main__":
+    main()

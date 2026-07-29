@@ -1,0 +1,20 @@
+{
+  "_comment": "decomp-synth project config for the Halo CE build 2342 decomp. Toolchain is ORIGINAL-XBOX x86 MSVC (cl 13.00.9254 from the August 2001 XDK), run under wibo — not the PowerPC family used by dc3/rb3-xenon. See tools/ghidra/workspaces.json and ../SETUP_STATUS.md.",
+  "name": "halo",
+  "compiler": "msvc",
+  "build_id": "base",
+  "obj_extension": ".obj",
+  "output_flag": "/Fo",
+  "uses_cd_prefix": false,
+  "obj_layout": "objdiff_map",
+  "objdiff_cli": "build/tools/objdiff-cli",
+  "m2c_target": "x86",
+
+  "_notes": {
+    "uses_cd_prefix": "false — the ninja edge invokes the compiler directly from the repo root: `build/tools/wibo xbox/bin/vc7/CL.Exe /nologo /c ... /Fobuild/base/<path>.obj <src>`. There is no `cd <dir> &&` prefix.",
+    "obj_layout": "objdiff_map, not mirror. Candidates land in build/base/<src>.obj and targets in build/split/<src>.obj — two parallel trees rather than one mirrored under build/<build_id>/. objdiff.json already carries the explicit base_path -> target_path pair per unit, so reading the map is both correct and cheaper than inferring it.",
+    "objdiff_cli": "build/tools/objdiff-cli, not bin/objdiff-cli — this project auto-downloads its own pinned objdiff (v3.3.1) via tools/download_tool.py. Override with $DECOMP_SYNTH_OBJDIFF if you want a different build.",
+    "m2c_target": "x86 is NOT a supported m2c target (m2c does mips/ppc). m2c guidance is therefore unavailable here and decomp-synth degrades cleanly without it, per its README. Synthesis leans on Ghidra hints + the CEA PDB type corpus in ../halo-symbols/ instead.",
+    "objdiff_stub_caveat": "csplit v0.0.2 emits 76 degenerate PHONY stub objects into build/split/ whose COFF symbol tables are invalid; objdiff-cli aborts on them. ../halo-report.sh filters those units out of objdiff.json before scoring. If decomp-synth invokes objdiff-cli over the whole project it will hit the same wall — score per-unit, or run halo-report.sh first."
+  }
+}
