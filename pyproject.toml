@@ -1,0 +1,55 @@
+[project]
+# NOTE: upstream's build path (configure.py, tools/download_tool.py, tools/vsgen/*)
+# deliberately uses only the standard library plus certifi, so `python3 configure.py`
+# keeps working with no virtualenv at all. Everything below is *our* reverse-engineering
+# tooling and lives in optional groups so that property is preserved.
+name = "halo-decomp-tools"
+version = "0.1.0"
+description = "RE tooling for the Halo CE build 2342 matching decompilation"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# Upstream's own requirement, declared so `uv run configure.py` works in the venv too.
+build = ["certifi"]
+
+# reccmp — the MSVC-x86 matching-decomp toolchain from the LEGO Island project.
+# Ships reccmp-cvdump, which reads PDB 2.0 (the format pdb-decompiler cannot),
+# plus vtable/stackcmp/datacmp/roadmap and a Ghidra importer.
+reccmp = ["reccmp>=0.1.6"]
+
+# pyghidra-mcp drives the Ghidra workspaces (see tools/ghidra/). Installed from the
+# local checkout because we track its main branch, not a release.
+mcp = ["mcp>=1.2", "httpx"]
+
+# Symbolic execution, for recovering jump tables and computed constants that
+# Ghidra's decompiler leaves as indirect branches.
+angr = ["angr"]
+
+# dewolf emits far more idiomatic C than Ghidra's own decompiler from the same
+# analysis. NOT on PyPI — it is a Ghidra-plugin-plus-Python-frontend installed from
+# source (fkie-cad/dewolf) and pinned to a Ghidra version, so it is deliberately not
+# an extra here. See docs/DECOMPILERS.md.
+
+[dependency-groups]
+dev = ["ruff", "pytest"]
+
+[tool.uv]
+# The Ghidra-facing scripts shell out to analyzeHeadless and talk HTTP; they do not
+# need the Ghidra jars on the Python path.
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Upstream's files are excluded on purpose. Reformatting them would create noise in every
+# diff we send back to punpckhdq/halo, so lint only covers code we actually own.
+extend-exclude = [
+  "build",
+  "source",
+  "configure.py",
+  "tools/ninja_syntax.py",
+  "tools/project_x86.py",
+  "tools/download_tool.py",
+  "tools/vsgen",
+]

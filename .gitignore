@@ -50,3 +50,6 @@ xbox/
 /.mcp.json
 # decomp-synth working dirs
 /.decomp-synth/
+
+# uv virtualenv (uv.lock IS tracked; the venv is not)
+/.venv/

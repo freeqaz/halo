@@ -22,8 +22,8 @@ Output is the raw tool result JSON (one object) on stdout. Errors -> stderr, exi
 """
 import json
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 
 PORTS = {
     8031: "halo/cachebeta.exe",

@@ -22,7 +22,14 @@ Usage:
   python3 tools/ghidra/harvest_decomp.py --category ai
   python3 tools/ghidra/harvest_decomp.py --addr 0x47c060 # a single function
 """
-import argparse, json, os, re, sqlite3, subprocess, sys, time
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CLIENT = os.path.join(ROOT, "tools", "ghidra", "ghidra_client.py")
@@ -33,11 +40,13 @@ PORT, BINARY = "8031", "/cachebeta.exe-d7dc40"
 
 def decompile(addr):
     """Return (name, code) for the function at addr, or (None, None) on failure."""
+    # check=False: a decompile failure is normal (thunks, data misidentified as code) and is
+    # reported as (None, None) rather than aborting the harvest.
     out = subprocess.run([sys.executable, CLIENT, PORT, "decompile", addr],
-                         capture_output=True, text=True, timeout=90)
+                         capture_output=True, text=True, timeout=90, check=False)
     try:
         obj = json.loads(out.stdout.strip())
-    except Exception:
+    except (json.JSONDecodeError, AttributeError):
         return None, None
     code = (obj.get("code") or "").replace("\\n", "\n").replace("\\t", "\t")
     return obj.get("name"), code
@@ -56,7 +65,7 @@ def load_name_map(con):
             "SELECT addr,name FROM functions WHERE workspace='halo'"
             " AND name IS NOT NULL AND addr IS NOT NULL"):
         try:
-            m["FUN_%08x" % int(addr, 16)] = name
+            m[f"FUN_{int(addr, 16):08x}"] = name
         except ValueError:
             pass
     return m
@@ -104,7 +113,8 @@ def main():
                   f" * applied names where known. Ghidra label: {gname}.\n"
                   f"{(' * Note: ' + notes + chr(10)) if notes else ''}"
                   f" */\n\n")
-        open(path, "w").write(header + code.strip() + "\n")
+        with open(path, "w") as fh:
+            fh.write(header + code.strip() + "\n")
         ok += 1
         time.sleep(0.15)
     print(f"harvested {ok} decompilations to {os.path.relpath(OUTDIR, ROOT)} "
