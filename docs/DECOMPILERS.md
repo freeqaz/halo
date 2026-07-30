@@ -191,9 +191,56 @@ measurement can be reproduced, not because it is recommended.
 Note the extra pins `pycparser<3`: 3.0 made `CLexer.filename` read-only while cffi still assigns
 to it, so `import angr` fails outright without the pin.
 
-Caveat on scope: this measures *static CFG recovery*. It says nothing about angr's other uses —
-targeted symbolic execution of a single known function, constraint solving, or emulation — which
-were not tested and might still be worth reaching for on a specific problem.
+#### The decompiler, tested separately
+
+The CFG result above says nothing about `proj.analyses.Decompiler`, which is a different
+analysis. Treating one as a verdict on the other was an overreach, so it got its own measurement
+on 7 functions. Also negative — but for a sharper reason, and **not** the same failure as RetDec.
+
+**3 of 7 crash outright**, all identically:
+
+```
+angr/analyses/reaching_definitions/engine_ail.py:552, in _ail_handle_Convert
+    conv = v[expr.to_bits - 1 : 0]
+TypeError: 'FP' object is not subscriptable
+```
+
+It slices a claripy `FP` as though it were a bitvector — an upstream bug in the float domain of
+angr's reaching-definitions engine. It reproduces under both the default and `Phoenix`
+structurers, so it is not a structuring quirk, and it was reproduced independently of the
+evaluation harness. It killed `collision_test_line`, `vector_intersects_pill3d` and
+`unit_update` — the last of which is only *incidentally* float-touching. On a 2002 x87 game
+binary that is not an edge case.
+
+Of the 4 that survive: one silently drops an entire call; one drops a call argument and
+hallucinates one elsewhere; one leaks raw VEX IR (`x86g_calculate_eflags_c`, `cc_op` temporaries)
+and declares 0 parameters for a 4-arg cdecl function; one needs a non-default structurer and then
+emits a non-compilable computed `goto` containing a raw register name.
+
+**angr is nonetheless clearly better than RetDec on code it can handle**, and conflating the two
+would be wrong. On `display_assert` RetDec deleted the stores, the halt/warn selection and the
+null-check fallback; angr preserves all of them and gets the structure nearly right. Its failure
+is narrow — call arity — rather than wholesale dead-code elimination:
+
+```c
+v11 = "halt";  if (!a2) v11 = "warn";   // angr keeps this; RetDec deleted it
+return sub_47da00(v0, v1, v2, v3, v4);  // but passes 5 where the disassembly pushes 6
+```
+
+Verified against the bytes: six `push`es then `call 0x47da00`. Ghidra emits six arguments.
+
+Still disqualifying for matching work — wrong argument counts in *both* directions is precisely
+the error that cannot be tolerated — but the gap to usable is a specific upstream bug, not a
+design dead end. Worth re-testing if angr fixes the FP conversion path.
+
+Ergonomics: `Decompiler` requires a whole-binary `CFGModel` first, a mandatory ~95 s / 2.33 GiB
+tax before the first function. After that, 1–3 s each.
+
+Evidence: `../../decompiler-eval/angr-decompiler/`.
+
+Caveat on scope: the two measurements cover static CFG recovery and decompilation. Neither says
+anything about targeted symbolic execution of a single known function, constraint solving, or
+emulation — untested, and still plausibly useful on a specific stubborn problem.
 
 ## Deliberately skipped
 
