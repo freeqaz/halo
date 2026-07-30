@@ -14,7 +14,20 @@ header included in hcex build.
 
 /* ---------- structures */
 
+struct geosphere
+{
+	short segment_count;
+	real_point3d *vertices;
+	short *triangle_strip_vertex_indices;
+	short vertex_count;
+	short triangle_count;
+	short triangle_strip_count;
+};
+
 /* ---------- prototypes/GEOMETRY.C */
+
+struct geosphere *geosphere_new(short segment_count);
+void geosphere_dispose(struct geosphere *sphere);
 
 short convex_polygon3d_clip_to_plane(
 	short count,

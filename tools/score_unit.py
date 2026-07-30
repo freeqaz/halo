@@ -29,6 +29,14 @@ OBJDIFF = ROOT / "objdiff.json"
 CLI = ROOT / "build" / "tools" / "objdiff-cli"
 
 
+def _f(d: dict, key: str) -> float:
+    """Report numbers arrive as either floats or decimal strings depending on the field."""
+    try:
+        return float(d.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def load_units() -> list[dict]:
     return json.loads(OBJDIFF.read_text()).get("units", [])
 
@@ -101,18 +109,31 @@ def main() -> int:
     for unit in report.get("units", []):
         m = unit.get("measures", {})
         print(f"\n{unit['name']}")
-        print(f"  code   {m.get('matched_code_percent', 0):6.2f}%   "
-              f"({m.get('matched_code', 0)}/{m.get('total_code', 0)} bytes)")
-        print(f"  data   {m.get('matched_data_percent', 0):6.2f}%")
-        print(f"  funcs  {m.get('matched_functions', 0)}/{m.get('total_functions', 0)}"
-              f"   complete={m.get('complete_code_percent', 0):.2f}%")
+        # matched_code_percent is the EXACT-byte metric: a function contributes 0 unless it
+        # is byte-identical. fuzzy_match_percent is the graded one. A unit can sit at 99.9%
+        # fuzzy and still report a much lower exact percent — that is correct, not a bug.
+        print(f"  code   {_f(m, 'matched_code_percent'):6.2f}% exact   "
+              f"({m.get('matched_code', 0)}/{m.get('total_code', 0)} bytes)"
+              f"   fuzzy {_f(m, 'fuzzy_match_percent'):6.2f}%")
+        print(f"  data   {_f(m, 'matched_data_percent'):6.2f}% exact   "
+              f"({m.get('matched_data', 0)}/{m.get('total_data', 0)} bytes)")
+        print(f"  funcs  {m.get('matched_functions', 0)}/{m.get('total_functions', 0)}")
+        # Section fuzzy percentages matter for data-only units: a tag table can sit at 93%
+        # fuzzy while `matched_data` is absent entirely (i.e. zero bytes match exactly), and
+        # showing only the unit-level number makes that look like 0% progress.
+        for sec in unit.get("sections", []):
+            print(f"    section {sec.get('name', '?'):<10} {sec.get('size', 0):>7} bytes"
+                  f"   fuzzy {_f(sec, 'fuzzy_match_percent'):7.3f}%")
         if args.functions:
-            for fn in unit.get("functions", []):
-                fm = fn.get("measures", {})
-                pct = fm.get("matched_code_percent", 0)
-                flag = "OK " if pct >= 100 else "   "
-                print(f"    {flag}{pct:6.2f}%  {fn.get('name', '?')}"
-                      f"  ({fm.get('total_code', 0)} bytes)")
+            # Functions carry `fuzzy_match_percent` and `size` directly — there is no
+            # per-function `measures` dict, which an earlier version of this script assumed
+            # and so reported 0.00%/0 bytes for everything.
+            for fn in sorted(unit.get("functions", []),
+                             key=lambda f: _f(f, "fuzzy_match_percent")):
+                pct = _f(fn, "fuzzy_match_percent")
+                flag = "OK " if pct >= 100 else "-- "
+                print(f"    {flag}{pct:7.3f}%  {fn.get('name', '?')}"
+                      f"  ({fn.get('size', 0)} bytes)")
     return 0
 
 

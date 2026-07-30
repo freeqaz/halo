@@ -8,6 +8,11 @@ symbols in this file:
 
 /* ---------- headers */
 
+#include "cseries.h"
+#include "actions.h"
+
+#include "actors.h"
+
 /* ---------- constants */
 
 /* ---------- macros */
@@ -16,8 +21,18 @@ symbols in this file:
 
 /* ---------- prototypes */
 
+void action_sleep_control(long actor_index);
+
 /* ---------- globals */
 
 /* ---------- public code */
+
+void action_sleep_control(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+
+	actor->orders.look.idle_look_type = 0;
+}
 
 /* ---------- private code */
