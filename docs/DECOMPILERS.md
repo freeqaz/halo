@@ -152,12 +152,48 @@ installed from source and pinned to a Ghidra version, which is why it is not a `
 extra. Same underlying analysis as Ghidra, so it improves how the input reads without finding
 anything new.
 
-### 6. angr — for indirect branches, not for its C output
+### 6. angr — measured, and it adds nothing here
 
-Cloned at `~/code/milohax/angr-decompiler` but `angr` is not importable (no environment). An
-`angr` extra exists in `pyproject.toml`. Its value here is **symbolic execution** to recover
-jump tables and computed constants that Ghidra leaves as unresolved indirect branches — not its
-decompiler.
+The hypothesis was that angr's symbolic execution would resolve indirect branches Ghidra leaves
+dangling. **It resolved zero of them.** Measured, not assumed — evidence in
+`../../decompiler-eval/`.
+
+Ghidra's baseline on `cachebeta.exe` (full analysis + PDB):
+
+| | resolved | unresolved |
+|---|---:|---:|
+| Computed jumps | 575 | 28 |
+| Computed calls | 1,074 | 447 |
+
+angr `CFGFast(resolve_indirect_jumps=True)`: 93 s, 2.33 GiB, 470 resolved / 738 unresolved.
+Intersecting by address against Ghidra's 475 holes:
+
+```
+angr resolves that Ghidra did NOT:  0 of 475   (0 jumps, 0 calls)
+angr agrees with Ghidra:          454
+angr resolved where Ghidra sees no computed flow: 16
+Ghidra resolved but angr could not: 38
+```
+
+The 454 exact-address agreements confirm the two address spaces line up, so the zero is real and
+not an artefact of comparing different bases.
+
+The 16 "extra" resolutions are noise: 9 of their source addresses sit past `.text`'s end
+(`0x5d64b9`), and 10 resolve to targets beyond the last section (`0xa25f00`) — several to
+`0xb0012c`, which is not mapped at all. This is angr decoding `.rdata`/`.data` as code, and it
+shows up in the function count too: **25,990 functions against Ghidra's 10,265**, with 4,126 of
+them past the end of `.text`.
+
+So on the one axis where angr was supposed to win it scores zero, it loses 38 that Ghidra got,
+and it contributes false positives. **Not adopted.** The extra remains in `pyproject.toml` so the
+measurement can be reproduced, not because it is recommended.
+
+Note the extra pins `pycparser<3`: 3.0 made `CLexer.filename` read-only while cffi still assigns
+to it, so `import angr` fails outright without the pin.
+
+Caveat on scope: this measures *static CFG recovery*. It says nothing about angr's other uses —
+targeted symbolic execution of a single known function, constraint solving, or emulation — which
+were not tested and might still be worth reaching for on a specific problem.
 
 ## Deliberately skipped
 

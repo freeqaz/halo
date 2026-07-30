@@ -7,7 +7,17 @@ name = "halo-decomp-tools"
 version = "0.1.0"
 description = "RE tooling for the Halo CE build 2342 matching decompilation"
 requires-python = ">=3.11"
-dependencies = []
+
+# capstone is a DIRECT dependency, declared explicitly rather than inherited. It already
+# arrives transitively via reccmp, but relying on that would mean our disassembly tooling
+# silently breaks the day reccmp drops it or is itself removed — and reccmp is only
+# marginally useful here (see tools/reccmp/README.md), so that day is plausible.
+#
+# The installed version depends on which extras are synced: angr caps capstone, so with
+# `--extra angr` you get 5.0.7 and without it 5.0.9. Both satisfy >=5.0. Note `uv pip list`
+# reports the base-only resolution rather than what is actually in .venv — check with
+# `.venv/bin/python -c "import capstone; print(capstone.__version__)"` if it matters.
+dependencies = ["capstone>=5.0"]
 
 [project.optional-dependencies]
 # Upstream's own requirement, declared so `uv run configure.py` works in the venv too.
@@ -24,7 +34,12 @@ mcp = ["mcp>=1.2", "httpx"]
 
 # Symbolic execution, for recovering jump tables and computed constants that
 # Ghidra's decompiler leaves as indirect branches.
-angr = ["angr"]
+#
+# pycparser<3 is required: 3.0 turned CLexer.filename into a read-only property, but
+# cffi's cparser still assigns to it (cffi/cparser.py:337). angr trips this the moment
+# pyvex asks libvex for an op type, so `import angr` fails outright with
+# "property 'filename' of 'CLexer' object has no setter". Not angr's bug, but ours to pin.
+angr = ["angr", "pycparser<3"]
 
 # dewolf emits far more idiomatic C than Ghidra's own decompiler from the same
 # analysis. NOT on PyPI — it is a Ghidra-plugin-plus-Python-frontend installed from
