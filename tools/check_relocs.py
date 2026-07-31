@@ -119,7 +119,7 @@ def check(unit: dict, verbose: bool) -> bool:
     if b"PHONY" in target.read_bytes()[:512]:
         return True
 
-    ours, ours_ph = relocs(base)
+    ours, _ = relocs(base)  # our own placeholder count is irrelevant; only the target's matters
     theirs, theirs_ph = relocs(target)
 
     missing = theirs - ours          # target references a name we never emit — a real defect

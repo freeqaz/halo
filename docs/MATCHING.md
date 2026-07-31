@@ -203,6 +203,33 @@ rather than inventing a plausible-looking field.
 
 ## 100% does NOT mean the callee names are right
 
+Two independent checks close this, and they catch **different** things — keep both:
+
+```sh
+# site-level: is the name at THIS call site right?
+python3 tools/score_unit.py <unit> \
+    --objdiff /home/free/code/milohax/objdiff/target/release/objdiff-cli \
+    -c functionRelocDiffs=name_check
+
+# multiset-level: do we reference names the target does not, or vice versa?
+python3 tools/check_relocs.py --matched
+```
+
+`NameCheck` catches **swaps** that a multiset comparison is blind to — two callees exchanged at
+their sites are multiset-equal, so `check_relocs.py` passes them. Conversely `check_relocs.py`
+catches base-extra references at sites where the target has no relocation at all, which
+`NameCheck` deliberately forgives (split targets add relocations per site with no coverage
+guarantee).
+
+The mode lives in the fork at `~/code/milohax/objdiff` — the pinned v3.3.1 has no `name_check`
+variant and **hard-fails** if it appears in `objdiff.json`
+(`Expected one of: none, name_address, data_value, all`). So pass it with `-c` against the fork
+binary rather than committing it to `objdiff.json`, until the pinned binary is replaced. Note
+also that the report cache key hashes CLI `-c` args but *not* `objdiff.json` options, so the
+JSON route can serve stale scores from a persisted `.cache`.
+
+
+
 **objdiff ignores external relocation symbol names.** Verified destructively: renaming a callee to
 `_object_get_and_verify_typeX` in a fully matching unit still scores **100.00% exact**. A `call`
 is `e8 00 00 00 00` plus a relocation record either way, and the scorer compares instruction bytes
@@ -226,6 +253,31 @@ PDB had no public name and supplying a real one is the *goal*), `$L` jump-table 
 A sweep of the 59 units at 100% found 4 with genuine mismatches — including one emitting a
 C++-mangled function-local static (`?…@?1??…@@9@9`) where the target has a plain file-level
 static. Those predate this work and are worth fixing.
+
+## Known: `random_math` XOR operand order is unreachable from C
+
+`get_number_suitable_for_initializing_random_seed` is byte-identical to the target, but its two
+relocations are **swapped**: the target calls `system_seconds` then `system_milliseconds`, we call
+them the other way round. `NameCheck` flags it (unit drops 100% → 82.45%); the default mode and
+`check_relocs.py` both pass it, the latter because a swap is multiset-equal.
+
+It is benign — XOR is commutative, both functions are called, the computed value is identical, and
+the emitted bytes match exactly. Only the order of two clock reads differs.
+
+It also appears to be unreachable from C. Verified by experiment:
+
+- **Six expression forms** — operand swaps, all three re-orderings, and both parenthesisations —
+  every one emits `system_milliseconds` first. MSVC canonicalises the operands of a commutative
+  chain, so source order does not reach it.
+- **Declaration order** does not reach it either: moving `system_seconds` ahead of
+  `system_milliseconds` in `cseries_windows.h` changed nothing.
+- **Temporaries do** produce the target's call order — but the function is inlined into
+  `random_math_initialize`, and every temporary-based form costs that function's 189 bytes of
+  exact match (unit 100% → 84.43%), because the inlined copy then accumulates in `eax` where the
+  target uses `esi`.
+
+So the choice is byte-exactness or relocation order, not both, and the current source keeps
+byte-exactness. Revisit if someone finds a form giving both.
 
 ## ninja does not track header dependencies
 

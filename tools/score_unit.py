@@ -56,6 +56,12 @@ def main() -> int:
     ap.add_argument("units", nargs="*", help="unit names, e.g. source/math/random_math")
     ap.add_argument("--all-in", metavar="DIR", help="score every unit under this directory")
     ap.add_argument("--functions", action="store_true", help="list per-function percentages")
+    ap.add_argument("--objdiff", metavar="PATH", default=str(CLI),
+                    help="objdiff-cli binary to use (default: pinned %(default)s)")
+    ap.add_argument("-c", "--config", metavar="KEY=VALUE", action="append", default=[],
+                    help="objdiff config property, passed through to `report generate -c`, "
+                         "e.g. -c functionRelocDiffs=name_check (requires objdiff >= 4.x fork; "
+                         "the pinned 3.3.1 has no name_check variant)")
     args = ap.parse_args()
 
     cfg = json.loads(OBJDIFF.read_text())
@@ -79,6 +85,11 @@ def main() -> int:
     if not want:
         return 1
 
+    # Units with no base_path at all (not yet decompiled) can't be scored; drop them
+    # silently in --all-in mode rather than crashing on the missing key.
+    want = [u for u in want if u.get("base_path")]
+    if not want:
+        sys.exit("no scoreable units selected (none have a base_path)")
     missing_base = [u["name"] for u in want if not (ROOT / u["base_path"]).exists()]
     if missing_base:
         print("candidate object not built for: " + ", ".join(missing_base), file=sys.stderr)
@@ -98,9 +109,10 @@ def main() -> int:
                 (proj / entry).symlink_to(src)
         (proj / "objdiff.json").write_text(json.dumps(cfg))
         out = proj / "report.json"
-        proc = subprocess.run(
-            [str(CLI), "report", "generate", "-p", str(proj), "-o", str(out)],
-            capture_output=True, text=True, check=False)
+        cmd = [args.objdiff, "report", "generate", "-p", str(proj), "-o", str(out)]
+        for kv in args.config:
+            cmd += ["-c", kv]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0:
             print(proc.stderr.strip() or proc.stdout.strip(), file=sys.stderr)
             return proc.returncode
