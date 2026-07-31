@@ -8,15 +8,41 @@ header included in hcex build.
 #define __SOUND_ENVIRONMENT_DEFINITIONS_H
 #pragma once
 
+/* ---------- headers */
+
+#include "math/real_math.h"
+
 /* ---------- constants */
 
 /* ---------- macros */
 
 /* ---------- structures */
 
+struct sound_environment
+{
+	long pad1;
+	short priority;
+	word pad2;
+	real room_intensity;
+	real room_intensity_hf;
+	real room_rolloff_factor;
+	real decay_time;
+	real decay_hf_ratio;
+	real reflections_intensity;
+	real reflections_delay;
+	real reverb_intensity;
+	real reverb_delay;
+	real diffusion;
+	real density;
+	real hf_reference;
+	long unused[4];
+};
+
 /* ---------- prototypes/EXAMPLE.C */
 
 /* ---------- globals */
+
+extern const struct sound_environment default_sound_environment;
 
 /* ---------- public code */
 

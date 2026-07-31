@@ -54,6 +54,12 @@ enum
 
 /* ---------- structures */
 
+struct unit_hud_interface
+{
+	struct tag_reference hud_interface;
+	long unused[8];
+};
+
 struct unit_camera
 {
 	char marker_name[TAG_STRING_LENGTH+1];
@@ -155,7 +161,10 @@ struct unit_definition
 	struct _unit_definition unit;
 };
 
-/* ---------- prototypes/EXAMPLE.C */
+/* ---------- prototypes/UNIT_DEFINITIONS.C */
+
+long unit_definition_get_active_hud_index(struct unit_definition const *unit_definition, boolean in_multiplayer);
+long unit_definition_get_seat_active_hud_index(struct unit_definition const *unit_definition, short seat_index, boolean in_multiplayer);
 
 /* ---------- globals */
 

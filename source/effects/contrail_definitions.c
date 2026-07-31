@@ -8,6 +8,11 @@ symbols in this file:
 
 /* ---------- headers */
 
+#include "cseries.h"
+#include "contrail_definitions.h"
+
+#include "tag_files/tag_groups.h"
+
 /* ---------- constants */
 
 /* ---------- macros */
@@ -17,6 +22,13 @@ symbols in this file:
 /* ---------- prototypes */
 
 /* ---------- globals */
+
+struct tag_reference_definition global_contrail_reference=
+{
+	0,
+	CONTRAIL_DEFINITION_TAG,
+	NULL
+};
 
 /* ---------- public code */
 

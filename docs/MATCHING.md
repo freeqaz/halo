@@ -128,6 +128,30 @@ Combine with #2: **where** you declare that variable matters. In `font_group` th
 `result` *after* the first call, and moving the declaration one line down was the entire
 difference between 96% and 100%.
 
+### 4c. `const` decides `.data` vs `.rdata`
+
+If a global lands in the wrong section, the usual cause is a missing `const`. A non-`const`
+definition goes to `.data`; the target may put it in `.rdata`. Adding `const` to **both** the
+`extern` declaration in the header and the definition in the `.c` moves it and can take a unit
+straight from 0% to an exact match — this was the whole of
+`source/sound/sound_environment_definitions`.
+
+Check which section the target symbol lives in first (`tools/show_target.py <unit> --symbols`);
+it tells you what qualifier the original had.
+
+### 4d. Boolean parameters are normalised, and `MIN`/`MAX` are macros
+
+Two idioms that look like free choices in C but are not:
+
+- `test` / `setne` in the target means the source normalised a boolean explicitly —
+  `(flag != FALSE)` rather than a plain assignment, which emits a direct `movzx`.
+- A **default value computed first, then conditionally overwritten** is the register shape of the
+  repo's `MIN`/`MAX` macros in `cseries.h` (`((a)>(b)?(b):(a))`), *not* an `if`-statement
+  reassignment. Reach for the macro.
+
+Both came out of `source/units/unit_definitions`, each costing a build/score cycle to discover.
+Read the disassembly for these shapes *before* writing "obviously equivalent" C.
+
 ### 5. Float constants fold across inlined call boundaries
 
 If an inlinable function's body ends in `* literalA` and the call site immediately multiplies by
@@ -147,11 +171,16 @@ Halo's own struct layouts are **not** in `cachebeta.pdb` — all 467 Bungie modu
 without debug info, so only XDK/CRT/XNet types survive. Layout evidence comes from:
 
 1. **`../halo-symbols/cea_2011-06-24_HCEX/`** — the CEA PDB extraction, 10,146 files whose
-   `projects/code/hcex/sources/` tree mirrors all 38 of this repo's source directories. Grep
-   `exported.h` for the type name. This is the primary source and the repo's convention is to take
-   **CEA field names verbatim** (compare `source/units/biped_definitions.h` against CEA's
-   `_biped_definition` — identical down to `turning_unused[4]`). Caveat: CEA is Halo *PC*-derived
-   with Saber modifications, so it is strong evidence, not ground truth.
+   `projects/code/hcex/sources/` tree mirrors all 38 of this repo's source directories. The repo's
+   convention is to take **CEA field names verbatim** (compare `source/units/biped_definitions.h`
+   against CEA's `_biped_definition` — identical down to `turning_unused[4]`). Caveat: CEA is Halo
+   *PC*-derived with Saber modifications, so it is strong evidence, not ground truth.
+
+   **Read `projects/code/hcex/sources/<dir>/<unit>.c` before `exported.h`.** The flattened
+   `exported.h` confirms raw field lists but loses context — it drops `tag_block` element-type
+   comments and real parameter names. The `.c` files carry real global declarations, real function
+   signatures with real parameter names, and sometimes the actual type name where a guess would be
+   wrong (`sound_environment` has no `_definition` suffix, for instance).
 2. **The repo itself.** Check for an existing incomplete type before naming a new struct — a
    header elsewhere may already reference it. `struct projectile_material_response_definition` was
    already declared in `source/objects/damage.h` while a new header defined it under a different

@@ -8,6 +8,9 @@ symbols in this file:
 
 /* ---------- headers */
 
+#include "cseries.h"
+#include "sound_environment_definitions.h"
+
 /* ---------- constants */
 
 /* ---------- macros */
@@ -17,6 +20,26 @@ symbols in this file:
 /* ---------- prototypes */
 
 /* ---------- globals */
+
+const struct sound_environment default_sound_environment=
+{
+	0,
+	0,
+	0,
+	0.0f,
+	0.0f,
+	0.0f,
+	1.0f,
+	0.5f,
+	0.0f,
+	0.02f,
+	0.0f,
+	0.04f,
+	1.0f,
+	1.0f,
+	5000.0f,
+	{0, 0, 0, 0}
+};
 
 /* ---------- public code */
 

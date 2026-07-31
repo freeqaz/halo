@@ -55,6 +55,13 @@ struct tag_reference
 	long index;
 };
 
+struct tag_reference_definition
+{
+	unsigned long flags;
+	unsigned long group_tag;
+	unsigned long *group_tags;
+};
+
 struct tag_data
 {
 	long size;
