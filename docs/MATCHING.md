@@ -201,6 +201,32 @@ rather than inventing a plausible-looking field.
 - Completed units end `void` functions with an explicit `return;`.
 - Enum families get a trailing `NUMBER_OF_…` terminator.
 
+## 100% does NOT mean the callee names are right
+
+**objdiff ignores external relocation symbol names.** Verified destructively: renaming a callee to
+`_object_get_and_verify_typeX` in a fully matching unit still scores **100.00% exact**. A `call`
+is `e8 00 00 00 00` plus a relocation record either way, and the scorer compares instruction bytes
+and relocation *slots*, not the names those slots point at.
+
+That is a real hole. A wrong name will not link, and it silently misrepresents which function the
+original called. One such defect was found by hand in `source/cache/predicted_resources`, where
+external names were missing their leading underscore — at 100%.
+
+So a match is not verified until you also run:
+
+```sh
+python3 tools/check_relocs.py <unit>
+python3 tools/check_relocs.py --matched      # every unit at 100% fuzzy; exit 1 on mismatch
+```
+
+It ignores things that legitimately differ: csplit's `_bss_00456208`-style placeholders (where the
+PDB had no public name and supplying a real one is the *goal*), `$L` jump-table labels,
+`__real@…` COMDAT float literals, and objdump's `+0x4`/`-0x4` addend suffixes.
+
+A sweep of the 59 units at 100% found 4 with genuine mismatches — including one emitting a
+C++-mangled function-local static (`?…@?1??…@@9@9`) where the target has a plain file-level
+static. Those predate this work and are worth fixing.
+
 ## ninja does not track header dependencies
 
 Editing a `.h` will **not** rebuild the `.c` files that include it — `ninja` reports "no work to

@@ -20,11 +20,20 @@ enum
 	NUMBER_OF_TEXT_STYLES
 };
 
+enum
+{
+	STRING_LISTS_GROUP_TAG = 'str#',
+	UNICODE_STRING_LISTS_GROUP_TAG = 'ustr',
+};
+
 /* ---------- macros */
 
 /* ---------- structures */
 
-/* ---------- prototypes/EXAMPLE.C */
+/* ---------- prototypes/TEXT_GROUP.C */
+
+char *string_list_get_string(long tag_index, short string_index);
+unsigned short *unicode_string_list_get_string(long tag_index, short string_index);
 
 /* ---------- globals */
 

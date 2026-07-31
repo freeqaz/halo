@@ -14,9 +14,21 @@ header included in hcex build.
 
 /* ---------- structures */
 
-/* ---------- prototypes/EXAMPLE.C */
+struct sound_preferences
+{
+	short platform_code;
+	short actual_channel_counts[4];
+	short virtual_channel_counts[4];
+};
+
+/* ---------- prototypes/SOUND_PREFERENCES.C */
+
+void read_sound_preferences(struct sound_preferences **preferences);
+void write_sound_preferences(void);
 
 /* ---------- globals */
+
+extern short sound_channel_type_flags[4];
 
 /* ---------- public code */
 
