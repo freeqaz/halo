@@ -8,6 +8,11 @@ header included in hcex build.
 #define __FONT_GROUP_H
 #pragma once
 
+/* ---------- headers */
+
+#include "tag_groups.h"
+#include "text_group.h"
+
 /* ---------- constants */
 
 enum
@@ -35,7 +40,24 @@ struct font_header
 	struct tag_data pixels;
 };
 
+struct font_character
+{
+	unsigned short character;
+	short character_width;
+	short bitmap_width;
+	short bitmap_height;
+	short bitmap_origin_x;
+	short bitmap_origin_y;
+	short hardware_character_index;
+	unsigned short pad;
+	long pixels_offset;
+};
+
 /* ---------- prototypes/FONT_GROUP.C */
+
+struct font_character *font_get_character_by_ascii_code(
+	struct font_header *header,
+	unsigned short character);
 
 /* ---------- globals */
 

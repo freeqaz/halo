@@ -7,9 +7,32 @@ the Xbox XDK — no retail Visual C++ reproduces its codegen — so its habits a
 ## The loop
 
 ```sh
+python3 tools/show_target.py <unit>                             # READ THE TARGET FIRST
 flock /tmp/claude/halo-build.lock ninja build/base/<unit>.obj   # build one object
 python3 tools/score_unit.py <unit> --functions                  # score it
 ```
+
+### Start from the target object, not a decompiler
+
+`build/split/**/*.obj` was carved out of `cachebeta.exe` by csplit **using the original PDB**, so
+each object carries real symbol names and COFF relocations. `objdump -d -r` therefore resolves
+every call target to its actual name:
+
+```
+  19:  e8 00 00 00 00    call   1e <_font_get_character_by_ascii_code+0x1e>
+            1a: DISP32   _tag_block_get_element_with_size
+```
+
+That is the code you are trying to reproduce, exactly, with callee names already resolved. A
+decompiler is a *reconstruction* of it and can add control-flow and type noise of its own. Four
+units were matched to 100% in one session working purely from `objdump` output plus CEA field
+names, without opening Ghidra at all.
+
+**This is not an argument against the Ghidra workbench** — it holds 7,840 PDB-applied names and
+27,309 types, and is the right tool for breadth: finding callers, understanding what a callback is
+for, naming things across the whole image. But for the per-unit matching loop it is not the
+starting point. `tools/show_target.py` wraps the objdump invocations (`--symbols`, `--data`,
+`--headers`, `--base` to dump our own object for comparison).
 
 `flock` matters only when several people or agents build at once; concurrent `ninja` in one build
 directory can corrupt `.ninja_log`. `score_unit.py` never mutates `objdiff.json`, so it is always
@@ -74,6 +97,37 @@ unreachable-from-C when it was really `yaw_vectors(forward, up, …)` where the 
 `yaw_vectors(up, forward, …)`. The swapped version was also semantically wrong. **Before
 concluding "no source-level lever", check whether the bytes are telling you the code is incorrect.**
 
+### 4a. Ternary into a pointer, then one unconditional dereference
+
+When the disassembly shows a conditional pointer computation whose branches **converge on a single
+dereference site**, write it as a ternary feeding one deref — not an if/else with the dereference
+duplicated in both arms:
+
+```c
+/* matches: one computation site, one deref */
+struct font_character *c = (index != NONE) ? &table[index] : NULL;
+return c->foo;
+```
+
+Two separate dereferences, one per branch, generate visibly different code. This is the
+value-selection analogue of the guard-shape rule (#6), which covers early exits.
+
+### 4b. The result-variable idiom
+
+When a register is zeroed early, reused across every exit path, and moved to `eax` at a single
+tail (`mov eax, ebx` at the end), the original used one result variable and one `return` — not
+multiple returns:
+
+```c
+struct font_character *result = NULL;
+...
+return result;
+```
+
+Combine with #2: **where** you declare that variable matters. In `font_group` the target zeroed
+`result` *after* the first call, and moving the declaration one line down was the entire
+difference between 96% and 100%.
+
 ### 5. Float constants fold across inlined call boundaries
 
 If an inlinable function's body ends in `* literalA` and the call site immediately multiplies by
@@ -117,6 +171,20 @@ rather than inventing a plausible-looking field.
   line numbers — that is deliberate, not a leak.
 - Completed units end `void` functions with an explicit `return;`.
 - Enum families get a trailing `NUMBER_OF_…` terminator.
+
+## ninja does not track header dependencies
+
+Editing a `.h` will **not** rebuild the `.c` files that include it — `ninja` reports "no work to
+do" and you get a stale object. After any header change, delete the affected objects by hand:
+
+```sh
+rm -f build/base/source/interface/terminal.obj
+flock /tmp/claude/halo-build.lock ninja build/base/source/interface/terminal.obj
+```
+
+For a header included widely, `rm -rf build/base && ninja all_source` is the only safe check. This
+matters most when verifying you have *not* regressed other units: a clean "no work to do" is
+meaningless here.
 
 ## Scoring ceilings are real, but prove them
 

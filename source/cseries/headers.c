@@ -8,6 +8,12 @@ symbols in this file:
 
 /* ---------- headers */
 
+#include "cseries.h"
+#include "headers.h"
+
+#include <xtl.h>
+#include "D3D8.h"
+
 /* ---------- constants */
 
 /* ---------- macros */
